@@ -1,0 +1,12 @@
+<!doctype html><html><head>
+<title>Support Tickets</title>
+<link rel="stylesheet" href="{{ url_for('static',filename='style.css') }}">
+</head><body><div class="c">
+<h1>AI Support Ticket Classifier</h1>
+<textarea id="ticket" placeholder="Describe the issue"></textarea><br>
+<input id="user" placeholder="User ID"><br>
+<button onclick="send()">Submit</button>
+<pre id="out"></pre>
+<h2>Tickets</h2><div id="list"></div>
+<script src="{{ url_for('static',filename='script.js') }}"></script>
+</div></body></html>
