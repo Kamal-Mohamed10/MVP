@@ -396,19 +396,23 @@ async function load() {
     }
 }
 
-function applyFilter(type) {
-    _activeFilter = { type: type };
+function applyFilter(type, evt) {
+    _activeFilter = { type };
     document.querySelectorAll(".filter-btn").forEach(b => b.classList.remove("active"));
-    event.target.classList.add("active");
+    const target = evt && evt.target ? evt.target : document.querySelector(`.filter-btn[data-filter='${type.toLowerCase()}']`);
+    if (target) {
+        target.classList.add("active");
+    }
     load();
 }
 
-function applyFilterPrio(priority) {
+function applyFilterPrio(priority, evt) {
     _activeFilter = { type: "priority", value: priority };
     document.querySelectorAll(".filter-btn").forEach(b => b.classList.remove("active"));
-    // Mark the clicked button
-    const btn = event.target;
-    btn.classList.add("active");
+    const target = evt && evt.target ? evt.target : document.querySelector(`.filter-btn[data-filter='${priority.toLowerCase()}']`);
+    if (target) {
+        target.classList.add("active");
+    }
     load();
 }
 
@@ -856,4 +860,4 @@ setInterval(function() {
     if (document.hidden) return;
     if (_isUserEditing()) return;
     Promise.all([load(), loadDashboard(), loadRecurring()]).catch(e => console.error('Auto-refresh error:', e));
-}, 5000);
+}, 3000);
