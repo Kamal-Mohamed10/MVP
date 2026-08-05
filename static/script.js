@@ -834,7 +834,26 @@ load();
 loadDashboard();
 loadRecurring();
 
-// Auto-refresh dashboard every 5 seconds for live updates
+// Auto-refresh (tickets, dashboard, recurring) every 5 seconds for near-real-time updates.
+// Skip refresh while user is actively editing a ticket to avoid losing typed changes.
+function _isUserEditing() {
+    const editableSelectors = [
+        '.edit-notes', '.edit-category', '.edit-priority', '.edit-csat'
+    ];
+    for (const sel of editableSelectors) {
+        const els = document.querySelectorAll(sel);
+        for (const el of els) {
+            if (el === document.activeElement || el.contains(document.activeElement)) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 setInterval(function() {
-    loadDashboard();
+    // Only refresh when page is visible and user is not in the middle of an edit
+    if (document.hidden) return;
+    if (_isUserEditing()) return;
+    Promise.all([load(), loadDashboard(), loadRecurring()]).catch(e => console.error('Auto-refresh error:', e));
 }, 5000);
