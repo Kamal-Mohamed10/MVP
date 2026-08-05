@@ -10,7 +10,6 @@ if "GEMINI_API_KEY" in os.environ:
 
 import re
 import json
-import sqlite3
 from datetime import datetime, timedelta
 from flask import Flask, render_template, request, jsonify
 
@@ -69,152 +68,110 @@ classifier = TicketClassifier()
 # Database Setup
 # ==============================
 
-DB = os.environ.get("SUPPORT_DB_PATH", "support_tickets.db")
+# Database configuration: use DATABASE_URL (Postgres) if provided, otherwise fall back to local SQLite file path (SUPPORT_DB_PATH)
+from sqlalchemy import create_engine, text
+
+SUPPORT_DB_FILE = os.environ.get("SUPPORT_DB_PATH", "support_tickets.db")
+DATABASE_URL = os.environ.get("DATABASE_URL")
+
+# If DATABASE_URL provided, use it (Postgres). Otherwise use sqlite file (which may be /tmp/support_tickets.db)
+if DATABASE_URL:
+    db_url = DATABASE_URL
+else:
+    # Resolve SUPPORT_DB_FILE similar to before
+    if os.path.isabs(SUPPORT_DB_FILE):
+        sqlite_path = SUPPORT_DB_FILE
+    else:
+        # prefer /tmp when available
+        sqlite_path = os.path.join("/tmp", os.path.basename(SUPPORT_DB_FILE)) if os.path.exists("/tmp") else SUPPORT_DB_FILE
+    db_url = f"sqlite:///{sqlite_path}"
+
+# Create SQLAlchemy engine
+engine_kwargs = {}
+if db_url.startswith("sqlite:///"):
+    engine_kwargs["connect_args"] = {"check_same_thread": False}
+
+engine = create_engine(db_url, **engine_kwargs)
+
+# Helper flags
+USING_POSTGRES = DATABASE_URL is not None and (DATABASE_URL.startswith("postgres") or DATABASE_URL.startswith("postgresql"))
 
 CHANNEL_CHOICES = ["email", "chat", "phone", "other"]
 
 
-def _resolve_db_path(db_path):
-    """Attempt to find a writable SQLite path. Returns a usable DB path or ':memory:' as a last resort."""
-    # Try the provided path first
-    candidates = [db_path]
-    # If it's not absolute, try /tmp (writable on many serverless platforms)
-    if not os.path.isabs(db_path):
-        candidates.append(os.path.join("/tmp", os.path.basename(db_path)))
-    # Finally fall back to in-memory
-    candidates.append(":memory:")
-
-    for p in candidates:
-        try:
-            conn = sqlite3.connect(p)
-            conn.close()
-            return p
-        except Exception:
-            continue
-    return ":memory:"
-
-
 def init_db():
-    """Initialize SQLite DB in a writable location without raising during import.
-
-    This function will try the configured DB path, then /tmp/<basename>, and
-    finally an in-memory database. Any failures are logged but will not stop
-    module import so the serverless function can start.
+    """Initialize DB schema using SQLAlchemy. Safe to call on import."""
+    # Create tables if they do not exist
+    tickets_ddl = """
+    CREATE TABLE IF NOT EXISTS tickets(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ticket_text TEXT,
+        user_id TEXT,
+        channel TEXT,
+        priority TEXT,
+        category TEXT,
+        reason TEXT,
+        status TEXT,
+        timestamp TEXT,
+        eta TEXT,
+        resolved_at TEXT,
+        resolution_notes TEXT,
+        csat_score INTEGER,
+        escalated INTEGER DEFAULT 0,
+        escalation_reason TEXT,
+        corrected_category TEXT,
+        corrected_priority TEXT,
+        corrected_request_type TEXT,
+        full_result TEXT
+    )
     """
-    global DB
-    DB = _resolve_db_path(DB)
 
-    try:
-        conn = sqlite3.connect(DB)
-        c = conn.cursor()
+    feedback_ddl = """
+    CREATE TABLE IF NOT EXISTS feedback(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ticket_text TEXT,
+        original_category TEXT,
+        corrected_category TEXT,
+        original_priority TEXT,
+        corrected_priority TEXT,
+        corrected_request_type TEXT,
+        created_at TEXT
+    )
+    """
 
-        # Main tickets table — store everything needed for display, dates, and learning
-        c.execute("""
-        CREATE TABLE IF NOT EXISTS tickets(
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            ticket_text TEXT,
-            user_id TEXT,
-            channel TEXT,
-            priority TEXT,
-            category TEXT,
-            reason TEXT,
-            status TEXT,
-            timestamp TEXT,
-            eta TEXT,
-            resolved_at TEXT,
-            resolution_notes TEXT,
-            csat_score INTEGER,
-            escalated INTEGER DEFAULT 0,
-            escalation_reason TEXT,
-            corrected_category TEXT,
-            corrected_priority TEXT,
-            corrected_request_type TEXT,
-            full_result TEXT
-        )
-        """)
+    with engine.begin() as conn:
+        conn.execute(text(tickets_ddl))
+        conn.execute(text(feedback_ddl))
 
-        # Feedback / learning table — stores specialist corrections so the
-        # classifier can learn and auto-apply corrections to similar future tickets
-        c.execute("""
-        CREATE TABLE IF NOT EXISTS feedback(
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            ticket_text TEXT,
-            original_category TEXT,
-            corrected_category TEXT,
-            original_priority TEXT,
-            corrected_priority TEXT,
-            corrected_request_type TEXT,
-            created_at TEXT
-        )
-        """)
 
-        # Ensure the columns exist for databases created with the old schema
-        new_columns = {
-            "channel": "TEXT",
-            "eta": "TEXT",
-            "resolved_at": "TEXT",
-            "resolution_notes": "TEXT",
-            "csat_score": "INTEGER",
-            "escalated": "INTEGER DEFAULT 0",
-            "escalation_reason": "TEXT",
-            "corrected_category": "TEXT",
-            "corrected_priority": "TEXT",
-            "corrected_request_type": "TEXT",
-            "full_result": "TEXT",
-        }
-        for col, definition in new_columns.items():
+def execute_fetchall(sql, params=None):
+    with engine.connect() as conn:
+        result = conn.execute(text(sql), params or {})
+        return [dict(r) for r in result.mappings().all()]
+
+
+def execute_fetchone(sql, params=None):
+    with engine.connect() as conn:
+        result = conn.execute(text(sql), params or {})
+        row = result.mappings().first()
+        return dict(row) if row else None
+
+
+def execute_commit(sql, params=None, returning=False):
+    with engine.begin() as conn:
+        result = conn.execute(text(sql), params or {})
+        # If caller requested a returning value (Postgres RETURNING id), return it
+        if returning:
             try:
-                c.execute(f"ALTER TABLE tickets ADD COLUMN {col} {definition}")
-            except sqlite3.OperationalError:
-                pass  # Column already exists
-
-        conn.commit()
-        conn.close()
-    except sqlite3.OperationalError as e:
-        # If the chosen path cannot be opened, fall back to an in-memory DB and
-        # create the minimal schema there so the app can run (data won't persist).
-        print(f"Warning: unable to open database file at '{DB}': {e}. Falling back to in-memory DB.")
-        DB = ":memory:"
-        conn = sqlite3.connect(DB)
-        c = conn.cursor()
-        # create minimal tables in-memory
-        c.execute("""
-        CREATE TABLE IF NOT EXISTS tickets(
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            ticket_text TEXT,
-            user_id TEXT,
-            channel TEXT,
-            priority TEXT,
-            category TEXT,
-            reason TEXT,
-            status TEXT,
-            timestamp TEXT,
-            eta TEXT,
-            resolved_at TEXT,
-            resolution_notes TEXT,
-            csat_score INTEGER,
-            escalated INTEGER DEFAULT 0,
-            escalation_reason TEXT,
-            corrected_category TEXT,
-            corrected_priority TEXT,
-            corrected_request_type TEXT,
-            full_result TEXT
-        )
-        """)
-        c.execute("""
-        CREATE TABLE IF NOT EXISTS feedback(
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            ticket_text TEXT,
-            original_category TEXT,
-            corrected_category TEXT,
-            original_priority TEXT,
-            corrected_priority TEXT,
-            corrected_request_type TEXT,
-            created_at TEXT
-        )
-        """)
-        conn.commit()
-        conn.close()
+                row = result.fetchone()
+                return row[0] if row else None
+            except Exception:
+                return None
+        # Fallback: try to return lastrowid for sqlite
+        try:
+            return result.lastrowid
+        except Exception:
+            return None
 
 
 init_db()
@@ -227,12 +184,11 @@ init_db()
 @app.route("/api/health", methods=["GET"])
 def health():
     """Health check and debug info — shows which DB is being used."""
-    global DB
     return jsonify({
         "status": "ok",
-        "db_path": DB,
-        "db_type": "in-memory" if DB == ":memory:" else "file" if DB.startswith("/") else "relative",
-        "note": "If db_type is 'in-memory', ticket data will not persist across function invocations on Vercel. Data will reset on each deployment/cold start."
+        "db_url": db_url,
+        "using_postgres": USING_POSTGRES,
+        "note": "If using_postgres is false and db_url points to a tmp or memory SQLite file, data may be ephemeral on serverless platforms."
     })
 
 
@@ -351,42 +307,58 @@ def _store_ticket(ticket_text, user_id, channel, result, reason, status="New",
                   escalation_reason=None, corrected_category=None,
                   corrected_priority=None, corrected_request_type=None):
     """Persist a single ticket row and return the stored record."""
-    conn = sqlite3.connect(DB)
-    conn.row_factory = sqlite3.Row
-    c = conn.cursor()
-    c.execute("""
+    params = {
+        "ticket_text": ticket_text,
+        "user_id": user_id,
+        "channel": channel,
+        "priority": result["priority"]["level"],
+        "category": result["categorization"]["primary_category"],
+        "reason": reason,
+        "status": status,
+        "timestamp": datetime.now().isoformat(),
+        "eta": result.get("eta"),
+        "resolution_notes": resolution_notes,
+        "csat_score": csat_score,
+        "escalated": escalated,
+        "escalation_reason": escalation_reason,
+        "corrected_category": corrected_category,
+        "corrected_priority": corrected_priority,
+        "corrected_request_type": corrected_request_type,
+        "full_result": json.dumps(result),
+    }
+
+    if USING_POSTGRES:
+        sql = """
         INSERT INTO tickets(
             ticket_text, user_id, channel, priority, category, reason, status,
             timestamp, eta, resolution_notes, csat_score, escalated,
             escalation_reason, corrected_category, corrected_priority,
             corrected_request_type, full_result
+        ) VALUES (
+            :ticket_text, :user_id, :channel, :priority, :category, :reason, :status,
+            :timestamp, :eta, :resolution_notes, :csat_score, :escalated,
+            :escalation_reason, :corrected_category, :corrected_priority,
+            :corrected_request_type, :full_result
+        ) RETURNING id
+        """
+        ticket_id = execute_commit(sql, params=params, returning=True)
+    else:
+        sql = """
+        INSERT INTO tickets(
+            ticket_text, user_id, channel, priority, category, reason, status,
+            timestamp, eta, resolution_notes, csat_score, escalated,
+            escalation_reason, corrected_category, corrected_priority,
+            corrected_request_type, full_result
+        ) VALUES (
+            :ticket_text, :user_id, :channel, :priority, :category, :reason, :status,
+            :timestamp, :eta, :resolution_notes, :csat_score, :escalated,
+            :escalation_reason, :corrected_category, :corrected_priority,
+            :corrected_request_type, :full_result
         )
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-    """, (
-        ticket_text,
-        user_id,
-        channel,
-        result["priority"]["level"],
-        result["categorization"]["primary_category"],
-        reason,
-        status,
-        datetime.now().isoformat(),
-        result.get("eta"),
-        resolution_notes,
-        csat_score,
-        escalated,
-        escalation_reason,
-        corrected_category,
-        corrected_priority,
-        corrected_request_type,
-        json.dumps(result),
-    ))
-    conn.commit()
-    ticket_id = c.lastrowid
-    row = conn.execute(
-        "SELECT * FROM tickets WHERE id = ?", (ticket_id,)
-    ).fetchone()
-    conn.close()
+        """
+        ticket_id = execute_commit(sql, params=params)
+
+    row = execute_fetchone("SELECT * FROM tickets WHERE id = :id", {"id": ticket_id})
     return _row_to_ticket(row)
 
 
@@ -420,16 +392,7 @@ def classify_ticket():
         result = classifier.classify(ticket_text)
 
         # 2. Learning layer — check if a similar ticket was previously corrected
-        conn = sqlite3.connect(DB)
-        conn.row_factory = sqlite3.Row
-        feedback_rows = [
-            dict(row)
-            for row in conn.execute(
-                "SELECT * FROM feedback ORDER BY created_at DESC"
-            )
-        ]
-        conn.close()
-
+        feedback_rows = execute_fetchall("SELECT * FROM feedback ORDER BY created_at DESC")
         matched_feedback = _find_similar_feedback(feedback_rows, ticket_text)
         if matched_feedback:
             result = _apply_feedback_correction(result, matched_feedback)
@@ -477,15 +440,7 @@ def classify_bulk():
             return jsonify({"error": "No tickets provided"}), 400
 
         # Fetch feedback once for the learning layer
-        conn = sqlite3.connect(DB)
-        conn.row_factory = sqlite3.Row
-        feedback_rows = [
-            dict(row)
-            for row in conn.execute(
-                "SELECT * FROM feedback ORDER BY created_at DESC"
-            )
-        ]
-        conn.close()
+        feedback_rows = execute_fetchall("SELECT * FROM feedback ORDER BY created_at DESC")
 
         saved_tickets = []
         priority_counts = {}
@@ -555,8 +510,6 @@ def get_tickets():
       - category: filter by category name
       - search:   free-text search within ticket_text
     """
-    conn = sqlite3.connect(DB)
-    conn.row_factory = sqlite3.Row
 
     status_filter = request.args.get("status", "all").lower()
     overdue_only = request.args.get("overdue", "").lower() == "true"
@@ -566,7 +519,7 @@ def get_tickets():
 
     query = "SELECT * FROM tickets"
     conditions = []
-    params = []
+    params = {}
 
     if status_filter == "open":
         conditions.append("status != 'Resolved'")
@@ -575,23 +528,22 @@ def get_tickets():
 
     if priority_filter:
         # Match on the P-level prefix
-        conditions.append("priority LIKE ? OR priority LIKE ?")
-        params.append(f"{priority_filter} %")
-        params.append(priority_filter)
+        conditions.append("(priority LIKE :prio_prefix OR priority = :prio_exact)")
+        params["prio_prefix"] = f"{priority_filter} %"
+        params["prio_exact"] = priority_filter
 
     if category_filter:
-        conditions.append("category = ?")
-        params.append(category_filter)
+        conditions.append("category = :category")
+        params["category"] = category_filter
 
     if search:
-        conditions.append("ticket_text LIKE ?")
-        params.append(f"%{search}%")
+        conditions.append("ticket_text LIKE :search")
+        params["search"] = f"%{search}%"
 
     if conditions:
         query += " WHERE " + " AND ".join(conditions)
 
-    rows = conn.execute(query + " ORDER BY id DESC", params).fetchall()
-    conn.close()
+    rows = execute_fetchall(query + " ORDER BY id DESC", params)
 
     tickets = [_row_to_ticket(row) for row in rows]
 
@@ -605,12 +557,7 @@ def get_tickets():
 @app.route("/api/tickets/<int:ticket_id>", methods=["GET"])
 def get_ticket(ticket_id):
     """Retrieve a single ticket by ID."""
-    conn = sqlite3.connect(DB)
-    conn.row_factory = sqlite3.Row
-    row = conn.execute(
-        "SELECT * FROM tickets WHERE id = ?", (ticket_id,)
-    ).fetchone()
-    conn.close()
+    row = execute_fetchone("SELECT * FROM tickets WHERE id = :id", {"id": ticket_id})
     if row is None:
         return jsonify({"error": "Ticket not found"}), 404
     return jsonify(_row_to_ticket(row))
@@ -629,15 +576,9 @@ def edit_ticket(ticket_id):
         if not data:
             return jsonify({"error": "Invalid JSON"}), 400
 
-        conn = sqlite3.connect(DB)
-        conn.row_factory = sqlite3.Row
-
         # Fetch current ticket
-        ticket_row = conn.execute(
-            "SELECT * FROM tickets WHERE id = ?", (ticket_id,)
-        ).fetchone()
+        ticket_row = execute_fetchone("SELECT * FROM tickets WHERE id = :id", {"id": ticket_id})
         if ticket_row is None:
-            conn.close()
             return jsonify({"error": "Ticket not found"}), 404
 
         ticket = dict(ticket_row)
@@ -710,44 +651,41 @@ def edit_ticket(ticket_id):
                 pass
 
         if updates:
-            set_clause = ", ".join(f"{col} = ?" for col in updates)
-            values = list(updates.values()) + [ticket_id]
-            conn.execute(
-                f"UPDATE tickets SET {set_clause} WHERE id = ?",
-                values,
-            )
-            conn.commit()
+            set_clause = ", ".join(f"{col} = :{col}" for col in updates.keys())
+            params = dict(updates)
+            params["id"] = ticket_id
+            execute_commit(f"UPDATE tickets SET {set_clause} WHERE id = :id", params=params)
 
             # Record the correction in the feedback table for learning
             if corrections:
-                conn.execute(
+                fb_params = {
+                    "ticket_text": ticket.get("ticket_text"),
+                    "original_category": corrections.get("original_category"),
+                    "corrected_category": corrections.get("corrected_category"),
+                    "original_priority": corrections.get("original_priority"),
+                    "corrected_priority": corrections.get("corrected_priority"),
+                    "corrected_request_type": corrections.get("corrected_request_type"),
+                    "created_at": datetime.now().isoformat(),
+                }
+                execute_commit(
                     """
                     INSERT INTO feedback(
                         ticket_text, original_category, corrected_category,
                         original_priority, corrected_priority,
                         corrected_request_type, created_at
-                    ) VALUES (?,?,?,?,?,?,?)
+                    ) VALUES (
+                        :ticket_text, :original_category, :corrected_category,
+                        :original_priority, :corrected_priority,
+                        :corrected_request_type, :created_at
+                    )
                     """,
-                    (
-                        ticket.get("ticket_text"),
-                        corrections.get("original_category"),
-                        corrections.get("corrected_category"),
-                        corrections.get("original_priority"),
-                        corrections.get("corrected_priority"),
-                        corrections.get("corrected_request_type"),
-                        datetime.now().isoformat(),
-                    ),
+                    params=fb_params,
                 )
-                conn.commit()
 
             # Return updated ticket
-            updated_row = conn.execute(
-                "SELECT * FROM tickets WHERE id = ?", (ticket_id,)
-            ).fetchone()
-            conn.close()
+            updated_row = execute_fetchone("SELECT * FROM tickets WHERE id = :id", {"id": ticket_id})
             return jsonify(_row_to_ticket(updated_row))
 
-        conn.close()
         return jsonify(_row_to_ticket(ticket_row))
 
     except Exception as e:
@@ -762,36 +700,26 @@ def escalate_ticket(ticket_id):
         data = request.get_json() or {}
         reason = data.get("reason", "Escalated to senior team/engineering for deeper investigation.")
 
-        conn = sqlite3.connect(DB)
-        conn.row_factory = sqlite3.Row
-        ticket_row = conn.execute(
-            "SELECT * FROM tickets WHERE id = ?", (ticket_id,)
-        ).fetchone()
+        ticket_row = execute_fetchone("SELECT * FROM tickets WHERE id = :id", {"id": ticket_id})
         if ticket_row is None:
-            conn.close()
             return jsonify({"error": "Ticket not found"}), 404
 
-        conn.execute(
-            "UPDATE tickets SET escalated = 1, escalation_reason = ? WHERE id = ?",
-            (reason, ticket_id),
+        execute_commit(
+            "UPDATE tickets SET escalated = 1, escalation_reason = :reason WHERE id = :id",
+            params={"reason": reason, "id": ticket_id},
         )
-        conn.commit()
 
         # Ensure escalated tickets are also bumped to P1/P2 and routed accordingly
         ticket = dict(ticket_row)
         current_pri = (ticket.get("priority") or "").split(" ")[0]
         if current_pri not in ("P1", "P2"):
             new_pri = "P2 - High" if current_pri == "P3" else "P1 - Critical"
-            conn.execute(
-                "UPDATE tickets SET priority = ? WHERE id = ?",
-                (new_pri, ticket_id),
+            execute_commit(
+                "UPDATE tickets SET priority = :priority WHERE id = :id",
+                params={"priority": new_pri, "id": ticket_id},
             )
-            conn.commit()
 
-        updated_row = conn.execute(
-            "SELECT * FROM tickets WHERE id = ?", (ticket_id,)
-        ).fetchone()
-        conn.close()
+        updated_row = execute_fetchone("SELECT * FROM tickets WHERE id = :id", {"id": ticket_id})
         return jsonify(_row_to_ticket(updated_row))
 
     except Exception as e:
@@ -806,56 +734,39 @@ def escalate_ticket(ticket_id):
 @app.route("/api/analytics/dashboard", methods=["GET"])
 def analytics_dashboard():
     """High-level dashboard summary for the queue overview."""
-    conn = sqlite3.connect(DB)
-    conn.row_factory = sqlite3.Row
-
-    total = conn.execute("SELECT COUNT(*) FROM tickets").fetchone()[0]
-    open_tickets = conn.execute(
-        "SELECT COUNT(*) FROM tickets WHERE status != 'Resolved'"
-    ).fetchone()[0]
-    resolved = conn.execute(
-        "SELECT COUNT(*) FROM tickets WHERE status = 'Resolved'"
-    ).fetchone()[0]
+    total_row = execute_fetchone("SELECT COUNT(*) AS cnt FROM tickets") or {"cnt": 0}
+    total = total_row.get("cnt", 0)
+    open_row = execute_fetchone("SELECT COUNT(*) AS cnt FROM tickets WHERE status != 'Resolved'") or {"cnt": 0}
+    open_tickets = open_row.get("cnt", 0)
+    resolved_row = execute_fetchone("SELECT COUNT(*) AS cnt FROM tickets WHERE status = 'Resolved'") or {"cnt": 0}
+    resolved = resolved_row.get("cnt", 0)
 
     # Priority breakdown
-    priority_rows = conn.execute(
-        "SELECT priority, COUNT(*) as cnt FROM tickets GROUP BY priority"
-    ).fetchall()
-    by_priority = {r["priority"]: r["cnt"] for r in priority_rows}
+    priority_rows = execute_fetchall("SELECT priority, COUNT(*) as cnt FROM tickets GROUP BY priority")
+    by_priority = {r.get("priority"): r.get("cnt") for r in priority_rows}
 
     # Category breakdown
-    category_rows = conn.execute(
-        "SELECT category, COUNT(*) as cnt FROM tickets "
-        "WHERE status != 'Resolved' GROUP BY category"
-    ).fetchall()
-    by_category_open = {r["category"]: r["cnt"] for r in category_rows}
+    category_rows = execute_fetchall("SELECT category, COUNT(*) as cnt FROM tickets WHERE status != 'Resolved' GROUP BY category")
+    by_category_open = {r.get("category"): r.get("cnt") for r in category_rows}
 
     # Channel breakdown
-    channel_rows = conn.execute(
-        "SELECT channel, COUNT(*) as cnt FROM tickets "
-        "WHERE status != 'Resolved' GROUP BY channel"
-    ).fetchall()
-    by_channel = {r["channel"]: r["cnt"] for r in channel_rows}
+    channel_rows = execute_fetchall("SELECT channel, COUNT(*) as cnt FROM tickets WHERE status != 'Resolved' GROUP BY channel")
+    by_channel = {r.get("channel"): r.get("cnt") for r in channel_rows}
 
     # CSAT stats
-    csat_rows = conn.execute(
-        "SELECT csat_score FROM tickets WHERE csat_score IS NOT NULL"
-    ).fetchall()
-    csat_scores = [r["csat_score"] for r in csat_rows]
+    csat_rows = execute_fetchall("SELECT csat_score FROM tickets WHERE csat_score IS NOT NULL")
+    csat_scores = [r.get("csat_score") for r in csat_rows if r.get("csat_score") is not None]
     avg_csat = round(sum(csat_scores) / len(csat_scores), 2) if csat_scores else None
     low_csat = sum(1 for s in csat_scores if s <= 2)
 
-    # Overdue count
-    rows = conn.execute(
-        "SELECT id, priority, status, eta, timestamp, resolved_at FROM tickets ORDER BY id DESC"
-    ).fetchall()
-    overdue_count = sum(1 for r in rows if _compute_sla_status(dict(r)) == "overdue")
-    due_soon_count = sum(1 for r in rows if _compute_sla_status(dict(r)) == "due_soon")
+    # Overdue & due soon
+    rows = execute_fetchall("SELECT id, priority, status, eta, timestamp, resolved_at FROM tickets ORDER BY id DESC")
+    overdue_count = sum(1 for r in rows if _compute_sla_status(r) == "overdue")
+    due_soon_count = sum(1 for r in rows if _compute_sla_status(r) == "due_soon")
 
     # Escalated count
-    escalated_count = conn.execute(
-        "SELECT COUNT(*) FROM tickets WHERE escalated = 1 AND status != 'Resolved'"
-    ).fetchone()[0]
+    escalated_row = execute_fetchone("SELECT COUNT(*) AS cnt FROM tickets WHERE escalated = 1 AND status != 'Resolved'") or {"cnt": 0}
+    escalated_count = escalated_row.get("cnt", 0)
 
     # Average resolution time (for resolved tickets)
     resolved_rows = [dict(r) for r in rows if (r["status"] or "").lower() == "resolved"]
@@ -870,8 +781,6 @@ def analytics_dashboard():
         except (ValueError, TypeError):
             pass
     avg_resolution_hours = round(sum(resolution_times) / len(resolution_times), 2) if resolution_times else None
-
-    conn.close()
 
     return jsonify({
         "total_tickets": total,
@@ -892,16 +801,14 @@ def analytics_dashboard():
 @app.route("/api/analytics/csat", methods=["GET"])
 def analytics_csat():
     """CSAT trends and breakdowns for monitoring satisfaction."""
-    conn = sqlite3.connect(DB)
-    conn.row_factory = sqlite3.Row
 
     # Overall and by category
-    rows = conn.execute(
+    rows = execute_fetchall(
         "SELECT csat_score, category, timestamp FROM tickets "
         "WHERE csat_score IS NOT NULL ORDER BY timestamp DESC"
-    ).fetchall()
+    )
 
-    scores = [dict(r) for r in rows]
+    scores = [r for r in rows]
     overall_avg = round(sum(s["csat_score"] for s in scores) / len(scores), 2) if scores else None
 
     by_category = {}
@@ -916,7 +823,6 @@ def analytics_csat():
     # Recent scores (last 20)
     recent = [{"score": s["csat_score"], "category": s.get("category"), "timestamp": s.get("timestamp")} for s in scores[:20]]
 
-    conn.close()
     return jsonify({
         "overall_avg": overall_avg,
         "total_rated": len(scores),
@@ -932,23 +838,19 @@ def analytics_recurring():
     Groups tickets by category/request_type and runs keyword frequency
     analysis to surface the most common complaint themes.
     """
-    conn = sqlite3.connect(DB)
-    conn.row_factory = sqlite3.Row
 
     # Group by category and request_type, count open tickets.
     # request_type lives inside the full_result JSON, so we parse it in Python.
-    open_rows = conn.execute(
-        "SELECT id, category, full_result FROM tickets WHERE status != 'Resolved'"
-    ).fetchall()
+    open_rows = execute_fetchall("SELECT id, category, full_result FROM tickets WHERE status != 'Resolved'")
 
     type_counts = {}
     for r in open_rows:
         try:
-            full = json.loads(r["full_result"] or "{}")
+            full = json.loads(r.get("full_result") or "{}")
             req_type = full.get("categorization", {}).get("request_type", "Unknown")
         except (json.JSONDecodeError, TypeError):
             req_type = "Unknown"
-        key = (r["category"] or "Uncategorized", req_type)
+        key = (r.get("category") or "Uncategorized", req_type)
         type_counts[key] = type_counts.get(key, 0) + 1
 
     recurring_open = [
@@ -958,9 +860,7 @@ def analytics_recurring():
 
 
     # Keyword frequency analysis across all ticket texts to find common themes
-    all_rows = conn.execute(
-        "SELECT ticket_text, category FROM tickets"
-    ).fetchall()
+    all_rows = execute_fetchall("SELECT ticket_text, category FROM tickets")
 
     keyword_freq = {}
     category_keywords = {}
@@ -976,8 +876,8 @@ def analytics_recurring():
     ]
 
     for r in all_rows:
-        text_lower = (r["ticket_text"] or "").lower()
-        category = r["category"] or "Uncategorized"
+        text_lower = (r.get("ticket_text") or "").lower()
+        category = r.get("category") or "Uncategorized"
         for kw in important_keywords:
             if kw in text_lower:
                 keyword_freq[kw] = keyword_freq.get(kw, 0) + 1
@@ -1001,21 +901,19 @@ def analytics_recurring():
         })
 
     # Repeated complainants — user_ids appearing with multiple low CSAT ratings
-    csat_rows = conn.execute(
+    csat_rows = execute_fetchall(
         "SELECT user_id, csat_score FROM tickets "
         "WHERE csat_score IS NOT NULL AND csat_score <= 2 AND user_id != 'anonymous'"
-    ).fetchall()
+    )
     user_complaints = {}
     for r in csat_rows:
-        uid = r["user_id"]
+        uid = r.get("user_id")
         user_complaints[uid] = user_complaints.get(uid, 0) + 1
     repeat_complainants = [
         {"user_id": uid, "low_csat_count": cnt}
         for uid, cnt in sorted(user_complaints.items(), key=lambda x: x[1], reverse=True)
         if cnt >= 2
     ][:10]
-
-    conn.close()
 
     return jsonify({
         "recurring_open_by_type": recurring_open,
