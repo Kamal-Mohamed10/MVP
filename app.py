@@ -1,10 +1,37 @@
 import os
+# Defensive: remove Gemini API key from the environment if present to avoid
+# serverless import-time crashes on Vercel where a stray GEMINI_API_KEY
+# might cause a third-party client to fail during function initialization.
+# If you need Gemini in production, comment out this block and ensure the
+# client is initialized with proper error handling and environment checks.
+if "GEMINI_API_KEY" in os.environ:
+    print("Warning: GEMINI_API_KEY detected in environment — removing to prevent serverless function crashes.")
+    os.environ.pop("GEMINI_API_KEY", None)
+
 import re
 import json
 import sqlite3
 from datetime import datetime, timedelta
 from flask import Flask, render_template, request, jsonify
-from ticket_classifier import TicketClassifier
+
+# Try to import TicketClassifier from local module; fallback to a simple stub
+try:
+    from ticket_classifier import TicketClassifier  # type: ignore
+except ModuleNotFoundError:
+    print("Warning: ticket_classifier module not found — using fallback stub TicketClassifier.")
+    class TicketClassifier:
+        def __init__(self):
+            pass
+        def classify(self, text):
+            return {
+                "ticket_summary": text[:100] + ("..." if len(text) > 100 else ""),
+                "categorization": {"primary_category": "General", "sub_category": "General", "request_type": "Service Request"},
+                "priority": {"level": "P4 - Low", "rationale": "Fallback classifier (module missing)"},
+                "triage": {"customer_tier": "Free / Starter", "affected_systems": ["General System"], "reproducibility": "Vague report", "sentiment": "Neutral"},
+                "routing": {"suggested_department": "Tier 1 Support", "internal_notes": "Fallback classifier in use."},
+                "eta": (datetime.now() + timedelta(hours=24)).isoformat(),
+                "customer_response_draft": "Thank you for your message. We will review your request and respond within 24 hours."
+            }
 
 app = Flask(__name__)
 app.config["JSON_SORT_KEYS"] = False
