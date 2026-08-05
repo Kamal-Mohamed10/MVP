@@ -158,16 +158,36 @@ def execute_fetchone(sql, params=None):
 
 
 def execute_commit(sql, params=None, returning=False):
+    """
+    Execute a write statement inside a transaction and return a helpful value when possible.
+
+    - If returning=True (used with Postgres RETURNING), try to return the first column of the returned row.
+    - For SQLite, explicitly query last_insert_rowid() on the same connection to reliably obtain the inserted id.
+    - Fall back to result.lastrowid when available.
+    """
     with engine.begin() as conn:
         result = conn.execute(text(sql), params or {})
-        # If caller requested a returning value (Postgres RETURNING id), return it
+
+        # If caller requested a returning value (e.g., PostgreSQL RETURNING id), try to read it
         if returning:
             try:
                 row = result.fetchone()
-                return row[0] if row else None
+                if row:
+                    return row[0]
             except Exception:
-                return None
-        # Fallback: try to return lastrowid for sqlite
+                # Continue to fallbacks below
+                pass
+
+        # If using SQLite, obtain the last insert id using the SQLite function on the same connection
+        try:
+            if db_url.startswith("sqlite"):
+                maybe = conn.execute(text("SELECT last_insert_rowid() AS id")).mappings().first()
+                if maybe and maybe.get("id") is not None:
+                    return maybe.get("id")
+        except Exception:
+            pass
+
+        # As a last resort, try the DBAPI lastrowid attribute on the result
         try:
             return result.lastrowid
         except Exception:
