@@ -43,77 +43,152 @@ classifier = TicketClassifier()
 # Database Setup
 # ==============================
 
-DB = "support_tickets.db"
+DB = os.environ.get("SUPPORT_DB_PATH", "support_tickets.db")
 
 CHANNEL_CHOICES = ["email", "chat", "phone", "other"]
 
 
-def init_db():
-    conn = sqlite3.connect(DB)
-    c = conn.cursor()
+def _resolve_db_path(db_path):
+    """Attempt to find a writable SQLite path. Returns a usable DB path or ':memory:' as a last resort."""
+    # Try the provided path first
+    candidates = [db_path]
+    # If it's not absolute, try /tmp (writable on many serverless platforms)
+    if not os.path.isabs(db_path):
+        candidates.append(os.path.join("/tmp", os.path.basename(db_path)))
+    # Finally fall back to in-memory
+    candidates.append(":memory:")
 
-    # Main tickets table — store everything needed for display, dates, and learning
-    c.execute("""
-    CREATE TABLE IF NOT EXISTS tickets(
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        ticket_text TEXT,
-        user_id TEXT,
-        channel TEXT,
-        priority TEXT,
-        category TEXT,
-        reason TEXT,
-        status TEXT,
-        timestamp TEXT,
-        eta TEXT,
-        resolved_at TEXT,
-        resolution_notes TEXT,
-        csat_score INTEGER,
-        escalated INTEGER DEFAULT 0,
-        escalation_reason TEXT,
-        corrected_category TEXT,
-        corrected_priority TEXT,
-        corrected_request_type TEXT,
-        full_result TEXT
-    )
-    """)
-
-    # Feedback / learning table — stores specialist corrections so the
-    # classifier can learn and auto-apply corrections to similar future tickets
-    c.execute("""
-    CREATE TABLE IF NOT EXISTS feedback(
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        ticket_text TEXT,
-        original_category TEXT,
-        corrected_category TEXT,
-        original_priority TEXT,
-        corrected_priority TEXT,
-        corrected_request_type TEXT,
-        created_at TEXT
-    )
-    """)
-
-    # Ensure the columns exist for databases created with the old schema
-    new_columns = {
-        "channel": "TEXT",
-        "eta": "TEXT",
-        "resolved_at": "TEXT",
-        "resolution_notes": "TEXT",
-        "csat_score": "INTEGER",
-        "escalated": "INTEGER DEFAULT 0",
-        "escalation_reason": "TEXT",
-        "corrected_category": "TEXT",
-        "corrected_priority": "TEXT",
-        "corrected_request_type": "TEXT",
-        "full_result": "TEXT",
-    }
-    for col, definition in new_columns.items():
+    for p in candidates:
         try:
-            c.execute(f"ALTER TABLE tickets ADD COLUMN {col} {definition}")
-        except sqlite3.OperationalError:
-            pass  # Column already exists
+            conn = sqlite3.connect(p)
+            conn.close()
+            return p
+        except Exception:
+            continue
+    return ":memory:"
 
-    conn.commit()
-    conn.close()
+
+def init_db():
+    """Initialize SQLite DB in a writable location without raising during import.
+
+    This function will try the configured DB path, then /tmp/<basename>, and
+    finally an in-memory database. Any failures are logged but will not stop
+    module import so the serverless function can start.
+    """
+    global DB
+    DB = _resolve_db_path(DB)
+
+    try:
+        conn = sqlite3.connect(DB)
+        c = conn.cursor()
+
+        # Main tickets table — store everything needed for display, dates, and learning
+        c.execute("""
+        CREATE TABLE IF NOT EXISTS tickets(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ticket_text TEXT,
+            user_id TEXT,
+            channel TEXT,
+            priority TEXT,
+            category TEXT,
+            reason TEXT,
+            status TEXT,
+            timestamp TEXT,
+            eta TEXT,
+            resolved_at TEXT,
+            resolution_notes TEXT,
+            csat_score INTEGER,
+            escalated INTEGER DEFAULT 0,
+            escalation_reason TEXT,
+            corrected_category TEXT,
+            corrected_priority TEXT,
+            corrected_request_type TEXT,
+            full_result TEXT
+        )
+        """)
+
+        # Feedback / learning table — stores specialist corrections so the
+        # classifier can learn and auto-apply corrections to similar future tickets
+        c.execute("""
+        CREATE TABLE IF NOT EXISTS feedback(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ticket_text TEXT,
+            original_category TEXT,
+            corrected_category TEXT,
+            original_priority TEXT,
+            corrected_priority TEXT,
+            corrected_request_type TEXT,
+            created_at TEXT
+        )
+        """)
+
+        # Ensure the columns exist for databases created with the old schema
+        new_columns = {
+            "channel": "TEXT",
+            "eta": "TEXT",
+            "resolved_at": "TEXT",
+            "resolution_notes": "TEXT",
+            "csat_score": "INTEGER",
+            "escalated": "INTEGER DEFAULT 0",
+            "escalation_reason": "TEXT",
+            "corrected_category": "TEXT",
+            "corrected_priority": "TEXT",
+            "corrected_request_type": "TEXT",
+            "full_result": "TEXT",
+        }
+        for col, definition in new_columns.items():
+            try:
+                c.execute(f"ALTER TABLE tickets ADD COLUMN {col} {definition}")
+            except sqlite3.OperationalError:
+                pass  # Column already exists
+
+        conn.commit()
+        conn.close()
+    except sqlite3.OperationalError as e:
+        # If the chosen path cannot be opened, fall back to an in-memory DB and
+        # create the minimal schema there so the app can run (data won't persist).
+        print(f"Warning: unable to open database file at '{DB}': {e}. Falling back to in-memory DB.")
+        DB = ":memory:"
+        conn = sqlite3.connect(DB)
+        c = conn.cursor()
+        # create minimal tables in-memory
+        c.execute("""
+        CREATE TABLE IF NOT EXISTS tickets(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ticket_text TEXT,
+            user_id TEXT,
+            channel TEXT,
+            priority TEXT,
+            category TEXT,
+            reason TEXT,
+            status TEXT,
+            timestamp TEXT,
+            eta TEXT,
+            resolved_at TEXT,
+            resolution_notes TEXT,
+            csat_score INTEGER,
+            escalated INTEGER DEFAULT 0,
+            escalation_reason TEXT,
+            corrected_category TEXT,
+            corrected_priority TEXT,
+            corrected_request_type TEXT,
+            full_result TEXT
+        )
+        """)
+        c.execute("""
+        CREATE TABLE IF NOT EXISTS feedback(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ticket_text TEXT,
+            original_category TEXT,
+            corrected_category TEXT,
+            original_priority TEXT,
+            corrected_priority TEXT,
+            corrected_request_type TEXT,
+            created_at TEXT
+        )
+        """)
+        conn.commit()
+        conn.close()
 
 
 init_db()
