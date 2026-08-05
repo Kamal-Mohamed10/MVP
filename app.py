@@ -579,7 +579,13 @@ def edit_ticket(ticket_id):
         # Fetch current ticket
         ticket_row = execute_fetchone("SELECT * FROM tickets WHERE id = :id", {"id": ticket_id})
         if ticket_row is None:
-            return jsonify({"error": "Ticket not found"}), 404
+            # Diagnostic: include a brief sample of existing ticket ids to help debug
+            try:
+                sample = execute_fetchall("SELECT id, status FROM tickets ORDER BY id DESC LIMIT 5")
+            except Exception:
+                sample = []
+            print(f"edit_ticket: ticket_id={ticket_id} not found. sample_ids={[r.get('id') for r in sample]}")
+            return jsonify({"error": "Ticket not found", "attempted_id": ticket_id, "sample_tickets": sample}), 404
 
         ticket = dict(ticket_row)
         updates = {}
@@ -702,7 +708,12 @@ def escalate_ticket(ticket_id):
 
         ticket_row = execute_fetchone("SELECT * FROM tickets WHERE id = :id", {"id": ticket_id})
         if ticket_row is None:
-            return jsonify({"error": "Ticket not found"}), 404
+            try:
+                sample = execute_fetchall("SELECT id, status FROM tickets ORDER BY id DESC LIMIT 5")
+            except Exception:
+                sample = []
+            print(f"escalate_ticket: ticket_id={ticket_id} not found. sample_ids={[r.get('id') for r in sample]}")
+            return jsonify({"error": "Ticket not found", "attempted_id": ticket_id, "sample_tickets": sample}), 404
 
         execute_commit(
             "UPDATE tickets SET escalated = 1, escalation_reason = :reason WHERE id = :id",
