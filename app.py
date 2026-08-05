@@ -22,16 +22,42 @@ except ModuleNotFoundError:
     class TicketClassifier:
         def __init__(self):
             pass
+
         def classify(self, text):
+            """Return a minimal classification result so the app can operate.
+
+            This fallback mirrors the shape expected by app.py but with safe,
+            conservative defaults. The production classifier should provide
+            richer fields when available.
+            """
+            priority_level = "P4 - Low"
+            eta = self._calculate_eta(priority_level)
             return {
                 "ticket_summary": text[:100] + ("..." if len(text) > 100 else ""),
                 "categorization": {"primary_category": "General", "sub_category": "General", "request_type": "Service Request"},
-                "priority": {"level": "P4 - Low", "rationale": "Fallback classifier (module missing)"},
+                "priority": {"level": priority_level, "rationale": "Fallback classifier (module missing)"},
                 "triage": {"customer_tier": "Free / Starter", "affected_systems": ["General System"], "reproducibility": "Vague report", "sentiment": "Neutral"},
                 "routing": {"suggested_department": "Tier 1 Support", "internal_notes": "Fallback classifier in use."},
-                "eta": (datetime.now() + timedelta(hours=24)).isoformat(),
+                "eta": eta,
                 "customer_response_draft": "Thank you for your message. We will review your request and respond within 24 hours."
             }
+
+        def _calculate_eta(self, priority_level: str) -> str:
+            """Calculate ETA isoformat string based on P-level like the production classifier.
+
+            Accepts a priority string such as 'P1 - Critical' and returns an ISO datetime.
+            """
+            level = priority_level.split(" ")[0] if priority_level else "P4"
+            eta_map = {
+                "P1": timedelta(minutes=15),
+                "P2": timedelta(hours=1),
+                "P3": timedelta(hours=4),
+                "P4": timedelta(hours=24),
+                "P5": timedelta(hours=48),
+            }
+            eta_delta = eta_map.get(level, timedelta(hours=24))
+            eta = datetime.now() + eta_delta
+            return eta.isoformat()
 
 app = Flask(__name__)
 app.config["JSON_SORT_KEYS"] = False
