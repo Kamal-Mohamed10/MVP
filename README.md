@@ -72,6 +72,22 @@ python app.py
 open http://localhost:5001
 ```
 
+## Postgres migration helper
+
+If you already have a Postgres database and want to migrate existing SQLite data into it, use the helper script:
+
+```bash
+DATABASE_URL="postgres://user:password@host:port/dbname" \
+  python migrate_sqlite_to_postgres.py --sqlite-path support_tickets.db
+```
+
+If you want to clear the destination before migrating, add `--overwrite`:
+
+```bash
+DATABASE_URL="postgres://user:password@host:port/dbname" \
+  python migrate_sqlite_to_postgres.py --sqlite-path support_tickets.db --overwrite
+```
+
 ## API Endpoints
 
 | Method | Endpoint                         | Description                              |
