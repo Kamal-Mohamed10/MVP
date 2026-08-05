@@ -117,6 +117,7 @@ DATABASE_URL="postgres://user:password@host:port/dbname" \
 .
 ├── app.py                  # Flask backend (routes, DB, analytics, SLA, escalation)
 ├── ticket_classifier.py    # Rule-based ticket classification engine
+├── migrate_sqlite_to_postgres.py  # Helper script to copy SQLite data into Postgres
 ├── templates/
 │   └── index.html          # Dashboard UI
 ├── static/
