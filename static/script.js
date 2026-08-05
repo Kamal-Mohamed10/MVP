@@ -183,6 +183,7 @@ function starRating(score) {
 // ------------------------------------------------------------------
 
 let _activeFilter = { type: "all" };
+let _dashboardRefreshInterval = null;
 
 async function loadDashboard() {
     try {
@@ -832,3 +833,8 @@ document.addEventListener("click", function (e) {
 load();
 loadDashboard();
 loadRecurring();
+
+// Auto-refresh dashboard every 5 seconds for live updates
+setInterval(function() {
+    loadDashboard();
+}, 5000);

@@ -221,8 +221,20 @@ init_db()
 
 
 # ==============================
-# Learning Helpers
+# Health & Debug Routes
 # ==============================
+
+@app.route("/api/health", methods=["GET"])
+def health():
+    """Health check and debug info — shows which DB is being used."""
+    global DB
+    return jsonify({
+        "status": "ok",
+        "db_path": DB,
+        "db_type": "in-memory" if DB == ":memory:" else "file" if DB.startswith("/") else "relative",
+        "note": "If db_type is 'in-memory', ticket data will not persist across function invocations on Vercel. Data will reset on each deployment/cold start."
+    })
+
 
 def _tokenize(text):
     """Normalize text into a set of meaningful tokens."""
