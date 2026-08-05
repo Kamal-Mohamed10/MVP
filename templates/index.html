@@ -1,12 +1,142 @@
-<!doctype html><html><head>
-<title>Support Tickets</title>
-<link rel="stylesheet" href="{{ url_for('static',filename='style.css') }}">
-</head><body><div class="c">
-<h1>AI Support Ticket Classifier</h1>
-<textarea id="ticket" placeholder="Describe the issue"></textarea><br>
-<input id="user" placeholder="User ID"><br>
-<button onclick="send()">Submit</button>
-<pre id="out"></pre>
-<h2>Tickets</h2><div id="list"></div>
-<script src="{{ url_for('static',filename='script.js') }}"></script>
-</div></body></html>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Support Specialist Dashboard</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Support Specialist Dashboard</h1>
+            <p>Automated Ticket Priority Management (P1-P5) &middot; Multi-Channel Triage</p>
+        </header>
+
+        <main>
+            <!-- ==================== DASHBOARD SUMMARY ==================== -->
+            <section class="dashboard-section">
+                <h2>Queue Overview</h2>
+                <div class="dashboard-grid" id="dashboard-summary">
+                    <div class="dashboard-card">
+                        <div class="card-label">Total</div>
+                        <div class="card-value" id="stat-total">0</div>
+                    </div>
+                    <div class="dashboard-card highlight-open">
+                        <div class="card-label">Open</div>
+                        <div class="card-value" id="stat-open">0</div>
+                    </div>
+                    <div class="dashboard-card highlight-overdue">
+                        <div class="card-label">Overdue</div>
+                        <div class="card-value" id="stat-overdue">0</div>
+                    </div>
+                    <div class="dashboard-card highlight-due-soon">
+                        <div class="card-label">Due Soon</div>
+                        <div class="card-value" id="stat-due-soon">0</div>
+                    </div>
+                    <div class="dashboard-card highlight-escalated">
+                        <div class="card-label">Escalated</div>
+                        <div class="card-value" id="stat-escalated">0</div>
+                    </div>
+                    <div class="dashboard-card highlight-csat">
+                        <div class="card-label">Avg CSAT</div>
+                        <div class="card-value" id="stat-csat">—</div>
+                    </div>
+                    <div class="dashboard-card highlight-resolved">
+                        <div class="card-label">Resolved</div>
+                        <div class="card-value" id="stat-resolved">0</div>
+                    </div>
+                    <div class="dashboard-card highlight-resolution">
+                        <div class="card-label">Avg Resolver (hrs)</div>
+                        <div class="card-value" id="stat-resolution">—</div>
+                    </div>
+                </div>
+
+                <div class="chart-row">
+                    <div class="chart-card">
+                        <h3>Tickets by Priority (Open)</h3>
+                        <div class="bar-chart" id="chart-priority"></div>
+                    </div>
+                    <div class="chart-card">
+                        <h3>Tickets by Category (Open)</h3>
+                        <div class="bar-chart" id="chart-category"></div>
+                    </div>
+                    <div class="chart-card">
+                        <h3>Tickets by Channel (Open)</h3>
+                        <div class="bar-chart" id="chart-channel"></div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- ==================== RECURRING COMPLAINTS ==================== -->
+            <section class="analytics-section">
+                <h2>Recurring Complaints & Insights</h2>
+                <div id="recurring-content" class="recurring-content">
+                    <p class="empty-msg">Loading insights…</p>
+                </div>
+            </section>
+
+            <!-- ==================== BULK IMPORT ==================== -->
+            <section class="bulk-section">
+                <h2>Bulk Ticket Import</h2>
+                <p class="section-hint">Paste multiple tickets &mdash; one per line &mdash; to classify and queue them all at once instead of processing one at a time.</p>
+                <div class="form-row">
+                    <select id="bulk-channel" class="channel-select">
+                        <option value="email">Email</option>
+                        <option value="chat">Chat</option>
+                        <option value="phone">Phone</option>
+                        <option value="other">Other</option>
+                    </select>
+                    <button onclick="sendBulk()" id="bulk-btn" class="btn-primary">Process Bulk Tickets</button>
+                </div>
+                <textarea id="bulk-input" placeholder="Paste ticket #1&#10;Paste ticket #2&#10;Paste ticket #3"></textarea>
+                <div id="bulk-status" class="status-msg"></div>
+            </section>
+
+            <!-- ==================== NEW TICKET + RESULT ==================== -->
+            <div class="main-columns">
+                <section class="input-section">
+                    <h2>New Ticket</h2>
+                    <div class="form-group">
+                        <textarea id="ticket" placeholder="Describe the issue in detail..."></textarea>
+                    </div>
+                    <div class="form-row">
+                        <input id="user" type="text" placeholder="User ID (e.g., user_123)">
+                        <select id="channel" class="channel-select">
+                            <option value="email">Email</option>
+                            <option value="chat">Chat</option>
+                            <option value="phone">Phone</option>
+                            <option value="other">Other</option>
+                        </select>
+                        <button onclick="send()" id="submit-btn">Classify & Submit</button>
+                    </div>
+                    <div id="status-msg"></div>
+                </section>
+
+                <section class="output-section">
+                    <h2>Classification Result</h2>
+                    <pre id="out">Waiting for submission...</pre>
+                </section>
+            </div>
+
+
+            <!-- ==================== ACTIVE TICKETS / QUEUE ==================== -->
+            <section class="list-section">
+                <div class="list-header">
+                    <h2>Active Tickets</h2>
+                    <div class="queue-filters" id="queue-filters">
+                        <button class="filter-btn active" data-filter="all" onclick="applyFilter('all')">All</button>
+                        <button class="filter-btn" data-filter="open" onclick="applyFilter('open')">Open</button>
+                        <button class="filter-btn" data-filter="overdue" onclick="applyFilter('overdue')">Overdue</button>
+                        <button class="filter-btn" data-filter="p1" onclick="applyFilterPrio('P1')">P1</button>
+                        <button class="filter-btn" data-filter="p2" onclick="applyFilterPrio('P2')">P2</button>
+                        <button class="filter-btn" data-filter="escalated" onclick="applyFilter('escalated')">Escalated</button>
+                    </div>
+                </div>
+                <div id="list"><p class="empty-msg">Loading tickets…</p></div>
+            </section>
+        </main>
+    </div>
+    <script src="{{ url_for('static', filename='script.js') }}"></script>
+</body>
+</html>
