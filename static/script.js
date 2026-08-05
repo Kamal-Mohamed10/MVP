@@ -388,7 +388,22 @@ async function load() {
             return 0; // keep server order (newest first)
         });
 
-        listElement.innerHTML = tickets.map(renderTicketCard).join("");
+        // Build HTML once and avoid replacing DOM if nothing changed to reduce flicker
+        const newHtml = tickets.map(renderTicketCard).join("");
+        if (listElement.__lastHtml === newHtml) {
+            // No changes — nothing to do
+            return;
+        }
+
+        // Preserve scroll position within the list container (if any)
+        const prevScrollTop = listElement.scrollTop;
+
+        listElement.innerHTML = newHtml;
+        listElement.__lastHtml = newHtml;
+
+        // Restore scroll position when possible
+        try { listElement.scrollTop = prevScrollTop; } catch (err) { /* ignore */ }
+
     } catch (e) {
         console.error("Load error:", e);
         document.getElementById("list").innerHTML =
@@ -838,8 +853,9 @@ load();
 loadDashboard();
 loadRecurring();
 
-// Auto-refresh (tickets, dashboard, recurring) every 5 seconds for near-real-time updates.
-// Skip refresh while user is actively editing a ticket to avoid losing typed changes.
+// Auto-refresh (tickets, dashboard, recurring) every few seconds for near-real-time updates.
+// Skip refresh while user is actively editing a ticket or while the user is scrolling to avoid losing typed
+// changes or causing visual flicker when the user is interacting with the list.
 function _isUserEditing() {
     const editableSelectors = [
         '.edit-notes', '.edit-category', '.edit-priority', '.edit-csat'
@@ -855,9 +871,18 @@ function _isUserEditing() {
     return false;
 }
 
+let _isUserScrolling = false;
+let _scrollTimer = null;
+window.addEventListener('scroll', function() {
+    _isUserScrolling = true;
+    if (_scrollTimer) clearTimeout(_scrollTimer);
+    _scrollTimer = setTimeout(function() { _isUserScrolling = false; }, 250);
+}, { passive: true });
+
 setInterval(function() {
-    // Only refresh when page is visible and user is not in the middle of an edit
+    // Only refresh when page is visible and user is not in the middle of an edit or scrolling
     if (document.hidden) return;
     if (_isUserEditing()) return;
+    if (_isUserScrolling) return;
     Promise.all([load(), loadDashboard(), loadRecurring()]).catch(e => console.error('Auto-refresh error:', e));
 }, 3000);
