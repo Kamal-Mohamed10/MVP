@@ -40,7 +40,7 @@ function fmtDate(isoStr) {
     if (!isoStr) return "—";
     try {
         return new Date(isoStr).toLocaleString();
-    } catch {
+    } catch (e) {
         return "—";
     }
 }
@@ -187,8 +187,13 @@ let _dashboardRefreshInterval = null;
 
 async function loadDashboard() {
     try {
+        console.debug("[ticket-dashboard] loadDashboard start");
         const resp = await fetch("/api/analytics/dashboard");
+        if (!resp.ok) {
+            throw new Error(`Dashboard fetch failed: ${resp.status} ${resp.statusText}`);
+        }
         const data = await resp.json();
+        console.debug("[ticket-dashboard] dashboard data", data);
 
         document.getElementById("stat-total").textContent = data.total_tickets || 0;
         document.getElementById("stat-open").textContent = data.open_tickets || 0;
@@ -361,8 +366,27 @@ async function load() {
     }
 
     try {
+        const listElement = document.getElementById("list");
+        if (!listElement) {
+            console.error("[ticket-dashboard] ticket list container missing");
+            return;
+        }
+        listElement.innerHTML = '<p class="empty-msg">Loading tickets…</p>';
+
+        console.debug("[ticket-dashboard] load start", _activeFilter, url);
         const response = await fetch(url);
+        if (!response.ok) {
+            throw new Error(`Ticket list fetch failed: ${response.status} ${response.statusText}`);
+        }
+
         let tickets = await response.json();
+        console.debug("[ticket-dashboard] tickets fetched", tickets.length, tickets);
+
+        if (!Array.isArray(tickets)) {
+            console.error("Unexpected tickets payload:", tickets);
+            document.getElementById("list").innerHTML = '<p class="empty-msg">Error loading tickets.</p>';
+            return;
+        }
 
         // Client-side filter for escalated
         if (_activeFilter.type === "escalated") {
@@ -370,6 +394,10 @@ async function load() {
         }
 
         const listElement = document.getElementById("list");
+        if (!listElement) {
+            console.error("Ticket list container not found");
+            return;
+        }
 
         if (tickets.length === 0) {
             listElement.innerHTML = '<p class="empty-msg">No tickets match the current filter.</p>';
@@ -388,26 +416,22 @@ async function load() {
             return 0; // keep server order (newest first)
         });
 
-        // Build HTML once and avoid replacing DOM if nothing changed to reduce flicker
         const newHtml = tickets.map(renderTicketCard).join("");
-        if (listElement.__lastHtml === newHtml) {
-            // No changes — nothing to do
-            return;
-        }
 
         // Preserve scroll position within the list container (if any)
         const prevScrollTop = listElement.scrollTop;
 
         listElement.innerHTML = newHtml;
-        listElement.__lastHtml = newHtml;
 
         // Restore scroll position when possible
         try { listElement.scrollTop = prevScrollTop; } catch (err) { /* ignore */ }
 
     } catch (e) {
         console.error("Load error:", e);
-        document.getElementById("list").innerHTML =
-            '<p class="empty-msg">Error loading tickets.</p>';
+        const listElement = document.getElementById("list");
+        if (listElement) {
+            listElement.innerHTML = '<p class="empty-msg">Error loading tickets.</p>';
+        }
     }
 }
 
