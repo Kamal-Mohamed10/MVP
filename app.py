@@ -7,7 +7,13 @@ from datetime import datetime, timedelta
 from flask import Flask, render_template, request, jsonify
 from ticket_classifier import TicketClassifier
 
-app = Flask(__name__)
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+app = Flask(
+    __name__,
+    template_folder=os.path.join(BASE_DIR, "templates"),
+    static_folder=os.path.join(BASE_DIR, "static"),
+    static_url_path="/static"
+)
 app.config["JSON_SORT_KEYS"] = False
 
 # Initialize the local classifier
