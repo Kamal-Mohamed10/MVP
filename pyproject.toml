@@ -1,0 +1,8 @@
+[project]
+name = "support-ticket-triage-mvp"
+version = "0.1.0"
+description = "A Flask-based support ticket triage MVP deployed on Vercel."
+requires-python = ">=3.12"
+
+[tool.vercel]
+entrypoint = "app:app"

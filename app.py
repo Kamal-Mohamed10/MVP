@@ -2,6 +2,7 @@ import os
 import re
 import json
 import sqlite3
+import tempfile
 from datetime import datetime, timedelta
 from flask import Flask, render_template, request, jsonify
 from ticket_classifier import TicketClassifier
@@ -16,7 +17,7 @@ classifier = TicketClassifier()
 # Database Setup
 # ==============================
 
-DB = "support_tickets.db"
+DB = os.environ.get("SUPPORT_TICKETS_DB") or os.path.join(tempfile.gettempdir(), "support_tickets.db")
 
 CHANNEL_CHOICES = ["email", "chat", "phone", "other"]
 
@@ -890,4 +891,4 @@ def analytics_recurring():
 # ==============================
 
 if __name__ == "__main__":
-    app.run(debug=True, port=5001)
+    app.run(debug=True, port=5002)
