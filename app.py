@@ -39,68 +39,71 @@ def init_db():
         conn = sqlite3.connect(DB, timeout=10)
         c = conn.cursor()
 
-        # Main tickets table — store everything needed for display, dates, and learning
+        # Main tickets table - store everything needed for display, dates, and learning
         c.execute("""
-    CREATE TABLE IF NOT EXISTS tickets(
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        ticket_text TEXT,
-        user_id TEXT,
-        channel TEXT,
-        priority TEXT,
-        category TEXT,
-        reason TEXT,
-        status TEXT,
-        timestamp TEXT,
-        eta TEXT,
-        resolved_at TEXT,
-        resolution_notes TEXT,
-        csat_score INTEGER,
-        escalated INTEGER DEFAULT 0,
-        escalation_reason TEXT,
-        corrected_category TEXT,
-        corrected_priority TEXT,
-        corrected_request_type TEXT,
-        full_result TEXT
-    )
-    """)
+CREATE TABLE IF NOT EXISTS tickets(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticket_text TEXT,
+    user_id TEXT,
+    channel TEXT,
+    priority TEXT,
+    category TEXT,
+    reason TEXT,
+    status TEXT,
+    timestamp TEXT,
+    eta TEXT,
+    resolved_at TEXT,
+    resolution_notes TEXT,
+    csat_score INTEGER,
+    escalated INTEGER DEFAULT 0,
+    escalation_reason TEXT,
+    corrected_category TEXT,
+    corrected_priority TEXT,
+    corrected_request_type TEXT,
+    full_result TEXT
+)
+""")
 
-    # Feedback / learning table — stores specialist corrections so the
-    # classifier can learn and auto-apply corrections to similar future tickets
-    c.execute("""
-    CREATE TABLE IF NOT EXISTS feedback(
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        ticket_text TEXT,
-        original_category TEXT,
-        corrected_category TEXT,
-        original_priority TEXT,
-        corrected_priority TEXT,
-        corrected_request_type TEXT,
-        created_at TEXT
-    )
-    """)
+        # Feedback / learning table - stores specialist corrections so the
+        # classifier can learn and auto-apply corrections to similar future
+        # tickets
+        c.execute("""
+CREATE TABLE IF NOT EXISTS feedback(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticket_text TEXT,
+    original_category TEXT,
+    corrected_category TEXT,
+    original_priority TEXT,
+    corrected_priority TEXT,
+    corrected_request_type TEXT,
+    created_at TEXT
+)
+""")
 
-    # Ensure the columns exist for databases created with the old schema
-    new_columns = {
-        "channel": "TEXT",
-        "eta": "TEXT",
-        "resolved_at": "TEXT",
-        "resolution_notes": "TEXT",
-        "csat_score": "INTEGER",
-        "escalated": "INTEGER DEFAULT 0",
-        "escalation_reason": "TEXT",
-        "corrected_category": "TEXT",
-        "corrected_priority": "TEXT",
-        "corrected_request_type": "TEXT",
-        "full_result": "TEXT",
-    }
-    for col, definition in new_columns.items():
-        try:
-            c.execute(f"ALTER TABLE tickets ADD COLUMN {col} {definition}")
-        except sqlite3.OperationalError:
-            pass  # Column already exists
+        # Ensure the columns exist for databases created with the old schema
+        new_columns = {
+            "channel": "TEXT",
+            "eta": "TEXT",
+            "resolved_at": "TEXT",
+            "resolution_notes": "TEXT",
+            "csat_score": "INTEGER",
+            "escalated": "INTEGER DEFAULT 0",
+            "escalation_reason": "TEXT",
+            "corrected_category": "TEXT",
+            "corrected_priority": "TEXT",
+            "corrected_request_type": "TEXT",
+            "full_result": "TEXT",
+        }
+        for col, definition in new_columns.items():
+            try:
+                c.execute(f"ALTER TABLE tickets ADD COLUMN {col} {definition}")
+            except sqlite3.OperationalError:
+                pass  # Column already exists
 
-    conn.commit()
-    conn.close()
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"Database initialization failed: {e}")
 
 
 try:
