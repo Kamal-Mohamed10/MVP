@@ -24,16 +24,23 @@ classifier = TicketClassifier()
 # ==============================
 
 DB = os.environ.get("SUPPORT_TICKETS_DB") or os.path.join(tempfile.gettempdir(), "support_tickets.db")
+DB = os.path.abspath(DB)
 
 CHANNEL_CHOICES = ["email", "chat", "phone", "other"]
 
 
 def init_db():
-    conn = sqlite3.connect(DB)
-    c = conn.cursor()
+    try:
+        os.makedirs(os.path.dirname(DB), exist_ok=True)
+    except OSError as e:
+        print(f"Could not create DB directory {os.path.dirname(DB)}: {e}")
 
-    # Main tickets table — store everything needed for display, dates, and learning
-    c.execute("""
+    try:
+        conn = sqlite3.connect(DB, timeout=10)
+        c = conn.cursor()
+
+        # Main tickets table — store everything needed for display, dates, and learning
+        c.execute("""
     CREATE TABLE IF NOT EXISTS tickets(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         ticket_text TEXT,
@@ -96,7 +103,10 @@ def init_db():
     conn.close()
 
 
-init_db()
+try:
+    init_db()
+except Exception as e:
+    print(f"Failed to initialize database: {e}")
 
 
 # ==============================
