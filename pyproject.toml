@@ -11,5 +11,5 @@ dependencies = [
 requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
-[tool.vercel]
-entrypoint = "app:app"
+# Vercel will use api/index.py as the Python function entrypoint.
+# Keep pyproject.toml for Python dependency resolution, but routing is handled by vercel.json.
