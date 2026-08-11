@@ -1,6 +1,7 @@
 import os
 import re
 import json
+import csv
 import sqlite3
 import tempfile
 from datetime import datetime, timedelta
@@ -23,7 +24,9 @@ classifier = TicketClassifier()
 # Database Setup
 # ==============================
 
-DB = os.environ.get("SUPPORT_TICKETS_DB") or os.path.join(tempfile.gettempdir(), "support_tickets.db")
+# Use a stable project-local DB so imported CSV data persists across restarts.
+# Set SUPPORT_TICKETS_DB to override (e.g. an ephemeral path on Vercel).
+DB = os.environ.get("SUPPORT_TICKETS_DB") or os.path.join(BASE_DIR, "support_tickets.db")
 DB = os.path.abspath(DB)
 
 CHANNEL_CHOICES = ["email", "chat", "phone", "other"]
@@ -110,6 +113,264 @@ try:
     init_db()
 except Exception as e:
     print(f"Failed to initialize database: {e}")
+
+# ==============================
+# CSV Seed (Customer Support Dataset)
+# ==============================
+
+CSV_PATH = os.path.join(BASE_DIR, "customer_support_tickets.csv")
+
+# Map CSV "Ticket Priority" values to the app's P-level format
+CSV_PRIORITY_MAP = {
+    "Critical": "P1 - Critical",
+    "High": "P2 - High",
+    "Medium": "P3 - Medium",
+    "Low": "P4 - Low",
+}
+
+# Map CSV channels to the app's channel vocabulary
+CSV_CHANNEL_MAP = {
+    "Email": "email",
+    "Chat": "chat",
+    "Phone": "phone",
+    "Social media": "other",
+}
+
+# Map CSV ticket types to the app's category vocabulary
+CSV_CATEGORY_MAP = {
+    "Technical issue": "Bug / Defect",
+    "Billing inquiry": "Billing",
+    "Refund request": "Billing",
+    "Cancellation request": "Service Request",
+    "Product inquiry": "Service Request",
+}
+
+# Map CSV ticket status values to the app's status vocabulary
+CSV_STATUS_MAP = {
+    "Closed": "Resolved",
+    "Open": "Open",
+    "Pending Customer Response": "Open",
+}
+
+# Template placeholders in the CSV that refer to the purchased product.
+# The source CSV contains unrendered template tokens (e.g. {product_purchased})
+# inside Ticket Description. Substitute them with the real product name so
+# tickets read naturally instead of showing literal template syntax.
+PRODUCT_PLACEHOLDERS = [
+    "{product_purchased}", "{product_name}", "{product}",
+    "{product_purchases}", "{products_purchased}", "{products}",
+    "{product_purchase}", "{product_purchasing}", "{purchased}",
+    "{product_title}", "{product_purchased_name}", "{product_item}",
+    "{item}", "{item_name}", "{product_product}",
+    "{product_purchased_product}", "{product_product_purchased}",
+    "{product_selected}", "{product_for_all}", "{product_item_name}",
+    "{product_purchased_device}", "{product_purchased_name}",
+]
+
+
+def _substitute_product_placeholders(ticket_text, product_name):
+    """Replace product-name template placeholders with the real product name.
+
+    The source CSV stores literal template tokens like {product_purchased}
+    that were never rendered. Use the 'Product Purchased' column value so
+    seeded tickets display the actual product name.
+
+    Matching is case-insensitive and also handles angle-bracket variants
+    (e.g. <Product_purchased>) and stray duplicate closing braces that appear
+    in the raw CSV data.
+    """
+    if not ticket_text or not product_name:
+        return ticket_text
+    product = product_name.strip()
+    if not product:
+        return ticket_text
+
+    cleaned = ticket_text
+    for placeholder in PRODUCT_PLACEHOLDERS:
+        token = placeholder.strip("{}")
+        # Case-insensitive brace variant, including stray duplicate closing
+        # braces that appear in the raw CSV (e.g. {Product_Purchased}})
+        brace_pattern = re.compile(
+            r"\{" + re.escape(token) + r"\}\}?", re.IGNORECASE
+        )
+        cleaned = brace_pattern.sub(product, cleaned)
+        # Case-insensitive angle-bracket variant (<Product_purchased>)
+        angle_pattern = re.compile(
+            r"<" + re.escape(token) + r">", re.IGNORECASE
+        )
+        cleaned = angle_pattern.sub(product, cleaned)
+
+    # Catch-all: any remaining product template token (e.g. {product_id},
+    # {product_purchased_url}, <product_name>) with no dedicated CSV column
+    # gets replaced with the real product name so no raw template syntax
+    # shows up in the seeded tickets.
+    cleaned = re.sub(
+        r"[\{<]\s*product[^}>]*[\}>]", product, cleaned, flags=re.IGNORECASE
+    )
+    return cleaned
+
+
+def _csv_to_user_id(customer_email):
+    """Use the customer email as the user_id for cross-ticket tracking."""
+    return (customer_email or "anonymous").strip().lower()
+
+
+def _csv_to_timestamp(value):
+    """Parse a CSV date/datetime string into ISO format, or return None."""
+    if not value:
+        return None
+    value = str(value).strip()
+    if not value:
+        return None
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d", "%Y-%m-%dT%H:%M:%S"):
+        try:
+            return datetime.strptime(value, fmt).isoformat()
+        except ValueError:
+            continue
+    return None
+
+
+def _build_seeded_full_result(category, priority, channel, ticket_type, eta):
+    """Build a minimal full_result JSON blob matching the app's expected shape."""
+    return {
+        "categorization": {
+            "primary_category": category,
+            "request_type": ticket_type or "General",
+        },
+        "priority": {
+            "level": priority,
+            "rationale": "Imported from customer_support_tickets.csv",
+        },
+        "channel": channel,
+        "eta": eta,
+        "triage": {
+            "customer_tier": "Standard",
+            "affected_systems": [],
+            "reproducibility": "Unknown",
+            "sentiment": "Neutral",
+        },
+        "routing": {
+            "suggested_department": "Tier 1",
+            "internal_notes": "",
+        },
+    }
+
+
+def seed_from_csv():
+    """Import customer_support_tickets.csv into the tickets table.
+
+    Idempotent: only runs when the tickets table is empty, so repeated
+    startups won't duplicate data. If the CSV is missing, the app simply
+    continues with an empty queue.
+    """
+    if not os.path.exists(CSV_PATH):
+        print("No customer_support_tickets.csv found — skipping CSV seed.")
+        return
+
+    try:
+        conn = sqlite3.connect(DB, timeout=30)
+        conn.row_factory = sqlite3.Row
+        count = conn.execute("SELECT COUNT(*) FROM tickets").fetchone()[0]
+        if count > 0:
+            conn.close()
+            print(f"Tickets table already has {count} rows — skipping CSV seed.")
+            return
+
+        inserted = 0
+        skipped = 0
+        with open(CSV_PATH, newline="", encoding="utf-8") as csvfile:
+            reader = csv.DictReader(csvfile)
+            for row in reader:
+                ticket_text = (row.get("Ticket Description") or "").strip()
+                if not ticket_text:
+                    skipped += 1
+                    continue
+
+                # The CSV's Ticket Description contains unrendered template
+                # tokens (e.g. {product_purchased}). Substitute them with the
+                # real product name from the Product Purchased column so tickets
+                # display naturally (e.g. "issue with the GoPro Hero").
+                product_name = (row.get("Product Purchased") or "").strip()
+                ticket_text = _substitute_product_placeholders(ticket_text, product_name)
+                if not ticket_text.strip():
+                    skipped += 1
+                    continue
+
+                # Preserve the original CSV ticket ID (AUTOINCREMENT is
+                # overridden on first insert so rows keep their source ID)
+                try:
+                    ticket_id = int(row.get("Ticket ID"))
+                except (TypeError, ValueError):
+                    skipped += 1
+                    continue
+
+                user_id = _csv_to_user_id(row.get("Customer Email"))
+                channel = CSV_CHANNEL_MAP.get(
+                    (row.get("Ticket Channel") or "").strip(), "email"
+                )
+                priority = CSV_PRIORITY_MAP.get(
+                    (row.get("Ticket Priority") or "").strip(), "P4 - Low"
+                )
+                category = CSV_CATEGORY_MAP.get(
+                    (row.get("Ticket Type") or "").strip(), "Service Request"
+                )
+                status_val = CSV_STATUS_MAP.get(
+                    (row.get("Ticket Status") or "").strip(), "Open"
+                )
+                reason = (row.get("Ticket Subject") or "N/A").strip()
+                resolution_notes = (row.get("Resolution") or "").strip()
+                csat_raw = (row.get("Customer Satisfaction Rating") or "").strip()
+                try:
+                    csat_score = int(float(csat_raw)) if csat_raw else None
+                except (TypeError, ValueError):
+                    csat_score = None
+
+                # Timestamps: prefer First Response Time, fall back to Date of
+                # Purchase for created date. Time to Resolution becomes
+                # resolved_at for closed tickets.
+                timestamp = (
+                    _csv_to_timestamp(row.get("First Response Time"))
+                    or _csv_to_timestamp(row.get("Date of Purchase"))
+                    or datetime.now().isoformat()
+                )
+                resolved_at = _csv_to_timestamp(row.get("Time to Resolution"))
+                if status_val == "Resolved" and not resolved_at:
+                    resolved_at = timestamp
+
+                eta = classifier._calculate_eta(priority.split(" ")[0])
+                full_result = json.dumps(_build_seeded_full_result(
+                    category, priority, channel,
+                    (row.get("Ticket Type") or "").strip(), eta,
+                ))
+
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO tickets(
+                        id, ticket_text, user_id, channel, priority, category,
+                        reason, status, timestamp, eta, resolved_at,
+                        resolution_notes, csat_score, escalated,
+                        escalation_reason, corrected_category,
+                        corrected_priority, corrected_request_type, full_result
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        ticket_id, ticket_text, user_id, channel, priority,
+                        category, reason, status_val, timestamp, eta,
+                        resolved_at, resolution_notes, csat_score, 0, None,
+                        category, priority, None, full_result,
+                    ),
+                )
+                inserted += 1
+
+        conn.commit()
+        conn.close()
+        print(f"CSV seed complete: {inserted} tickets inserted, {skipped} skipped.")
+    except Exception as e:
+        print(f"CSV seed failed: {e}")
+
+
+# Run the seed after the DB is initialized (no-op if already seeded)
+seed_from_csv()
 
 
 # ==============================
