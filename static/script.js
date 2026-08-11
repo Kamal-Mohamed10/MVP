@@ -69,6 +69,69 @@ function escapeHtml(str) {
     return String(str).replace(/[&<>"']/g, function (ch) { return map[ch]; });
 }
 
+const CACHE_KEY = "support_ticket_cache";
+const DASHBOARD_CACHE_KEY = "support_ticket_dashboard_cache";
+
+function saveTicketCache(tickets) {
+    try {
+        window.localStorage.setItem(CACHE_KEY, JSON.stringify({
+            tickets: tickets,
+            timestamp: new Date().toISOString()
+        }));
+    } catch (e) {
+        console.warn("Unable to save ticket cache:", e);
+    }
+}
+
+function loadTicketCache() {
+    try {
+        const raw = window.localStorage.getItem(CACHE_KEY);
+        if (!raw) return null;
+        const parsed = JSON.parse(raw);
+        return Array.isArray(parsed.tickets) ? parsed.tickets : null;
+    } catch (e) {
+        console.warn("Unable to load ticket cache:", e);
+        return null;
+    }
+}
+
+// Merge server-returned tickets into the local cache. Filtered responses only
+// contain a subset, so a plain save would overwrite the full ticket list and
+// leave the persistence fallback incomplete. Merging preserves previously
+// cached tickets while keeping updated records (status, priority, etc.).
+function mergeTicketCache(serverTickets) {
+    if (!Array.isArray(serverTickets)) return;
+    const prior = loadTicketCache() || [];
+    const byId = new Map();
+    for (const t of prior) {
+        if (t && t.id !== undefined) byId.set(t.id, t);
+    }
+    for (const t of serverTickets) {
+        if (t && t.id !== undefined) byId.set(t.id, t);
+    }
+    const merged = Array.from(byId.values()).sort((a, b) => b.id - a.id);
+    saveTicketCache(merged);
+}
+
+function saveDashboardCache(data) {
+    try {
+        window.localStorage.setItem(DASHBOARD_CACHE_KEY, JSON.stringify(data));
+    } catch (e) {
+        console.warn("Unable to save dashboard cache:", e);
+    }
+}
+
+function loadDashboardCache() {
+    try {
+        const raw = window.localStorage.getItem(DASHBOARD_CACHE_KEY);
+        if (!raw) return null;
+        return JSON.parse(raw);
+    } catch (e) {
+        console.warn("Unable to load dashboard cache:", e);
+        return null;
+    }
+}
+
 function formatClassificationResult(result) {
     if (!result) return "No classification result available.";
 
@@ -184,16 +247,40 @@ function starRating(score) {
 
 let _activeFilter = { type: "all" };
 
+function renderDashboardData(data) {
+    if (!data) return;
+
+    document.getElementById("stat-total").textContent = data.total_tickets || 0;
+    document.getElementById("stat-open").textContent = data.open_tickets || 0;
+    document.getElementById("stat-overdue").textContent = data.overdue_tickets || 0;
+    document.getElementById("stat-due-soon").textContent = data.due_soon_tickets || 0;
+    document.getElementById("stat-escalated").textContent = data.escalated_tickets || 0;
+    document.getElementById("stat-resolved").textContent = data.resolved_total || 0;
+
+    const csatEl = document.getElementById("stat-csat");
+    csatEl.innerHTML = data.avg_csat !== null && data.avg_csat !== undefined
+        ? starRating(data.avg_csat) + " " + data.avg_csat.toFixed(1)
+        : "—";
+
+    const resEl = document.getElementById("stat-resolution");
+    resEl.textContent = (data.avg_resolution_hours !== null && data.avg_resolution_hours !== undefined)
+        ? data.avg_resolution_hours.toFixed(1) + "h"
+        : "—";
+
+    // Bar charts
+    renderBarChart("chart-priority", data.by_priority || {}, "priority");
+    renderBarChart("chart-category", data.by_category_open || {}, "category");
+    renderBarChart("chart-channel", data.by_channel || {}, "channel");
+}
+
 async function loadDashboard() {
     try {
         const resp = await fetch("/api/analytics/dashboard");
         const data = await resp.json();
 
-        document.getElementById("stat-total").textContent = data.total_tickets || 0;
-        document.getElementById("stat-open").textContent = data.open_tickets || 0;
-        document.getElementById("stat-overdue").textContent = data.overdue_tickets || 0;
-        document.getElementById("stat-due-soon").textContent = data.due_soon_tickets || 0;
-        document.getElementById("stat-escalated").textContent = data.escalated_tickets || 0;
+        renderDashboardData(data);
+        saveDashboardCache(data);
+
         // Fetch resolved count from tickets endpoint to ensure correct integer display
         fetch("/api/tickets?status=resolved")
             .then(r => r.ok ? r.json() : Promise.reject(r))
@@ -205,23 +292,12 @@ async function loadDashboard() {
                 // Fallback to dashboard data if the fetch fails
                 document.getElementById("stat-resolved").textContent = data.resolved_total || 0;
             });
-
-        const csatEl = document.getElementById("stat-csat");
-        csatEl.innerHTML = data.avg_csat !== null && data.avg_csat !== undefined
-            ? starRating(data.avg_csat) + " " + data.avg_csat.toFixed(1)
-            : "—";
-
-        const resEl = document.getElementById("stat-resolution");
-        resEl.textContent = (data.avg_resolution_hours !== null && data.avg_resolution_hours !== undefined)
-            ? data.avg_resolution_hours.toFixed(1) + "h"
-            : "—";
-
-        // Bar charts
-        renderBarChart("chart-priority", data.by_priority || {}, "priority");
-        renderBarChart("chart-category", data.by_category_open || {}, "category");
-        renderBarChart("chart-channel", data.by_channel || {}, "channel");
     } catch (e) {
         console.error("Dashboard load error:", e);
+        const cachedData = loadDashboardCache();
+        if (cachedData) {
+            renderDashboardData(cachedData);
+        }
     }
 }
 
@@ -341,6 +417,35 @@ async function loadRecurring() {
 // Load & render ticket list
 // ------------------------------------------------------------------
 
+// Apply the currently active filter to a ticket list client-side.
+// Used when falling back to the localStorage cache so only matching
+// tickets are shown.
+function filterTicketsClientSide(tickets) {
+    const f = _activeFilter;
+    if (!f || f.type === "all") return tickets;
+
+    if (f.type === "priority") {
+        return tickets.filter(t => priorityLevel(t.priority) === f.value);
+    }
+    if (f.type === "status" || f.type === "open") {
+        const wantOpen = f.type === "open" || f.value === "open";
+        if (wantOpen) {
+            return tickets.filter(t => (t.status || "").toLowerCase() !== "resolved");
+        }
+        if (f.value === "resolved") {
+            return tickets.filter(t => (t.status || "").toLowerCase() === "resolved");
+        }
+        return tickets; // "all"
+    }
+    if (f.type === "escalated") {
+        return tickets.filter(t => t.escalated);
+    }
+    if (f.type === "overdue") {
+        return tickets.filter(t => t.sla_status === "overdue");
+    }
+    return tickets;
+}
+
 async function load() {
     let url = "/api/tickets";
     let params = new URLSearchParams();
@@ -349,6 +454,8 @@ async function load() {
         params.set("priority", _activeFilter.value);
     } else if (_activeFilter.type === "status") {
         params.set("status", _activeFilter.value);
+    } else if (_activeFilter.type === "open") {
+        params.set("status", "open");
     } else if (_activeFilter.type === "escalated") {
         // Handled client-side since the API doesn't have a dedicated filter
     } else if (_activeFilter.type === "overdue") {
@@ -359,55 +466,76 @@ async function load() {
         url += "?" + params.toString();
     }
 
+    const listElement = document.getElementById("list");
+    let tickets = null;
+
     try {
         const response = await fetch(url);
-        let tickets = await response.json();
-
-        // Client-side filter for escalated
-        if (_activeFilter.type === "escalated") {
-            tickets = tickets.filter(t => t.escalated);
+        if (!response.ok) {
+            throw new Error("Server returned " + response.status);
         }
+        tickets = await response.json();
+        if (!Array.isArray(tickets)) {
+            throw new Error("Unexpected response from server");
+        }
+    } catch (e) {
+        console.error("Load error:", e);
+        tickets = null;
+    }
 
-        const listElement = document.getElementById("list");
-
-        if (tickets.length === 0) {
+    // Fall back to the last-known tickets from localStorage when the server
+    // returns nothing (e.g. fresh DB after a restart) or the request fails.
+    // The active filter is applied to the cached data too.
+    if (!tickets || tickets.length === 0) {
+        const fallback = filterTicketsClientSide(loadTicketCache() || []);
+        if (fallback.length > 0) {
+            tickets = fallback;
+        } else {
             listElement.innerHTML = '<p class="empty-msg">No tickets match the current filter.</p>';
             return;
         }
-
-        // Sort: overdue first, then by priority (P1 top), then newest
-        const priorityOrder = {"P1": 1, "P2": 2, "P3": 3, "P4": 4, "P5": 5};
-        tickets.sort((a, b) => {
-            const sa = a.sla_status === "overdue" ? 0 : 1;
-            const sb = b.sla_status === "overdue" ? 0 : 1;
-            if (sa !== sb) return sa - sb;
-            const pa = priorityOrder[priorityLevel(a.priority)] || 99;
-            const pb = priorityOrder[priorityLevel(b.priority)] || 99;
-            if (pa !== pb) return pa - pb;
-            return 0; // keep server order (newest first)
-        });
-
-        listElement.innerHTML = tickets.map(renderTicketCard).join("");
-    } catch (e) {
-        console.error("Load error:", e);
-        document.getElementById("list").innerHTML =
-            '<p class="empty-msg">Error loading tickets.</p>';
+    } else {
+        // Server data is authoritative; keep the cache in sync for offline/fallback use.
+        // Merging (vs. overwriting) preserves the full ticket list when a filter
+        // is active, so the persistence fallback stays complete.
+        mergeTicketCache(tickets);
     }
+
+    // Client-side filters the API can't express (escalated)
+    if (_activeFilter.type === "escalated") {
+        tickets = tickets.filter(t => t.escalated);
+    }
+
+    // Sort: overdue first, then by priority (P1 top), then newest
+    const priorityOrder = {"P1": 1, "P2": 2, "P3": 3, "P4": 4, "P5": 5};
+    tickets.sort((a, b) => {
+        const sa = a.sla_status === "overdue" ? 0 : 1;
+        const sb = b.sla_status === "overdue" ? 0 : 1;
+        if (sa !== sb) return sa - sb;
+        const pa = priorityOrder[priorityLevel(a.priority)] || 99;
+        const pb = priorityOrder[priorityLevel(b.priority)] || 99;
+        if (pa !== pb) return pa - pb;
+        return 0; // keep server order (newest first)
+    });
+
+    listElement.innerHTML = tickets.map(renderTicketCard).join("");
 }
 
-function applyFilter(type) {
-    _activeFilter = { type: type };
+function setActiveFilterButton(target) {
+    if (!target) return;
     document.querySelectorAll(".filter-btn").forEach(b => b.classList.remove("active"));
-    event.target.classList.add("active");
+    target.classList.add("active");
+}
+
+function applyFilter(type, event) {
+    _activeFilter = { type: type };
+    setActiveFilterButton(event ? event.currentTarget : null);
     load();
 }
 
-function applyFilterPrio(priority) {
+function applyFilterPrio(priority, event) {
     _activeFilter = { type: "priority", value: priority };
-    document.querySelectorAll(".filter-btn").forEach(b => b.classList.remove("active"));
-    // Mark the clicked button
-    const btn = event.target;
-    btn.classList.add("active");
+    setActiveFilterButton(event ? event.currentTarget : null);
     load();
 }
 
@@ -613,6 +741,7 @@ async function send() {
 
         ticketInput.value = "";
         await Promise.all([load(), loadDashboard(), loadRecurring()]);
+        localStorage.setItem('lastTicketAction', new Date().toISOString());
     } catch (error) {
         console.error("Error in send():", error);
         statusMsg.textContent = "Error: " + error.message;
@@ -832,3 +961,10 @@ document.addEventListener("click", function (e) {
 load();
 loadDashboard();
 loadRecurring();
+
+window.addEventListener("focus", function () {
+    // Reload queue and dashboard when the user returns to the tab,
+    // including when a ticket has just been submitted in another tab.
+    load();
+    loadDashboard();
+});

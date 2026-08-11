@@ -125,12 +125,12 @@
                 <div class="list-header">
                     <h2>Active Tickets</h2>
                     <div class="queue-filters" id="queue-filters">
-                        <button class="filter-btn active" data-filter="all" onclick="applyFilter('all')">All</button>
-                        <button class="filter-btn" data-filter="open" onclick="applyFilter('open')">Open</button>
-                        <button class="filter-btn" data-filter="overdue" onclick="applyFilter('overdue')">Overdue</button>
-                        <button class="filter-btn" data-filter="p1" onclick="applyFilterPrio('P1')">P1</button>
-                        <button class="filter-btn" data-filter="p2" onclick="applyFilterPrio('P2')">P2</button>
-                        <button class="filter-btn" data-filter="escalated" onclick="applyFilter('escalated')">Escalated</button>
+                        <button class="filter-btn active" data-filter="all" onclick="applyFilter('all', event)">All</button>
+                        <button class="filter-btn" data-filter="open" onclick="applyFilter('open', event)">Open</button>
+                        <button class="filter-btn" data-filter="overdue" onclick="applyFilter('overdue', event)">Overdue</button>
+                        <button class="filter-btn" data-filter="p1" onclick="applyFilterPrio('P1', event)">P1</button>
+                        <button class="filter-btn" data-filter="p2" onclick="applyFilterPrio('P2', event)">P2</button>
+                        <button class="filter-btn" data-filter="escalated" onclick="applyFilter('escalated', event)">Escalated</button>
                     </div>
                 </div>
                 <div id="list"><p class="empty-msg">Loading tickets…</p></div>
