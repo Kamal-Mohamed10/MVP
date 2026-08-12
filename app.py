@@ -25,8 +25,14 @@ classifier = TicketClassifier()
 # ==============================
 
 # Use a stable project-local DB so imported CSV data persists across restarts.
-# Set SUPPORT_TICKETS_DB to override (e.g. an ephemeral path on Vercel).
-DB = os.environ.get("SUPPORT_TICKETS_DB") or os.path.join(BASE_DIR, "support_tickets.db")
+# On Vercel the serverless filesystem is read-only except /tmp, and each
+# instance has its own ephemeral storage, so we point the DB at /tmp there
+# and re-seed automatically on each cold start.
+# Set SUPPORT_TICKETS_DB to override the path explicitly.
+if os.environ.get("VERCEL"):
+    DB = os.path.join(tempfile.gettempdir(), "support_tickets.db")
+else:
+    DB = os.environ.get("SUPPORT_TICKETS_DB") or os.path.join(BASE_DIR, "support_tickets.db")
 DB = os.path.abspath(DB)
 
 CHANNEL_CHOICES = ["email", "chat", "phone", "other"]
