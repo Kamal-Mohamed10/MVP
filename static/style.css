@@ -423,28 +423,33 @@ button:hover {
 
 .queue-filters {
     display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
+    align-items: center;
+    gap: 8px;
 }
 
-.filter-btn {
-    background: #ecf0f1;
-    color: #555;
+.filter-label {
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: #666;
+}
+
+.filter-select {
+    padding: 7px 12px;
     border: 1px solid #ddd;
-    border-radius: 16px;
-    padding: 5px 12px;
-    font-size: 0.8rem;
+    border-radius: 6px;
+    background: #fff;
+    font-size: 0.85rem;
     cursor: pointer;
-    transition: all 0.2s;
+    color: var(--primary-color);
+    font-weight: 600;
+    min-width: 160px;
+    transition: border-color 0.2s;
 }
 
-.filter-btn:hover {
-    background: #dee2e6;
-}
-
-.filter-btn.active {
-    background: var(--primary-color);
-    color: white;
+.filter-select:hover,
+.filter-select:focus {
+    border-color: var(--primary-color);
+    outline: none;
 }
 
 /* ==================================================================

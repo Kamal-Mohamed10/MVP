@@ -245,7 +245,7 @@ function starRating(score) {
 // Dashboard Summary + Charts
 // ------------------------------------------------------------------
 
-let _activeFilter = { type: "all" };
+let _activeFilter = { type: "" };
 
 function renderDashboardData(data) {
     if (!data) return;
@@ -422,17 +422,17 @@ async function loadRecurring() {
 // tickets are shown.
 function filterTicketsClientSide(tickets) {
     const f = _activeFilter;
-    if (!f || f.type === "all") return tickets;
+    if (!f || !f.type || f.type === "all") return tickets;
 
     if (f.type === "priority") {
         return tickets.filter(t => priorityLevel(t.priority) === f.value);
     }
-    if (f.type === "status" || f.type === "open") {
+    if (f.type === "status" || f.type === "open" || f.type === "resolved") {
         const wantOpen = f.type === "open" || f.value === "open";
         if (wantOpen) {
             return tickets.filter(t => (t.status || "").toLowerCase() !== "resolved");
         }
-        if (f.value === "resolved") {
+        if (f.type === "resolved" || f.value === "resolved") {
             return tickets.filter(t => (t.status || "").toLowerCase() === "resolved");
         }
         return tickets; // "all"
@@ -447,13 +447,22 @@ function filterTicketsClientSide(tickets) {
 }
 
 async function load() {
+    const listElement = document.getElementById("list");
+
+    // No filter selected yet — show a clean placeholder instead of hundreds
+    // of tickets. The user picks a view (Open, Resolved, etc.) to see tickets.
+    if (!_activeFilter.type) {
+        listElement.innerHTML = '<p class="empty-msg">Select a view above to see tickets.</p>';
+        return;
+    }
+
     let url = "/api/tickets";
     let params = new URLSearchParams();
 
     if (_activeFilter.type === "priority") {
         params.set("priority", _activeFilter.value);
-    } else if (_activeFilter.type === "status") {
-        params.set("status", _activeFilter.value);
+    } else if (_activeFilter.type === "status" || _activeFilter.type === "resolved") {
+        params.set("status", _activeFilter.type === "resolved" ? "resolved" : _activeFilter.value);
     } else if (_activeFilter.type === "open") {
         params.set("status", "open");
     } else if (_activeFilter.type === "escalated") {
@@ -466,7 +475,6 @@ async function load() {
         url += "?" + params.toString();
     }
 
-    const listElement = document.getElementById("list");
     let tickets = null;
 
     try {
@@ -521,21 +529,12 @@ async function load() {
     listElement.innerHTML = tickets.map(renderTicketCard).join("");
 }
 
-function setActiveFilterButton(target) {
-    if (!target) return;
-    document.querySelectorAll(".filter-btn").forEach(b => b.classList.remove("active"));
-    target.classList.add("active");
-}
-
-function applyFilter(type, event) {
-    _activeFilter = { type: type };
-    setActiveFilterButton(event ? event.currentTarget : null);
-    load();
-}
-
-function applyFilterPrio(priority, event) {
-    _activeFilter = { type: "priority", value: priority };
-    setActiveFilterButton(event ? event.currentTarget : null);
+function applyDropdownFilter(value) {
+    if (value === "P1" || value === "P2") {
+        _activeFilter = { type: "priority", value: value };
+    } else {
+        _activeFilter = { type: value };
+    }
     load();
 }
 

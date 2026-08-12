@@ -125,12 +125,17 @@
                 <div class="list-header">
                     <h2>Active Tickets</h2>
                     <div class="queue-filters" id="queue-filters">
-                        <button class="filter-btn active" data-filter="all" onclick="applyFilter('all', event)">All</button>
-                        <button class="filter-btn" data-filter="open" onclick="applyFilter('open', event)">Open</button>
-                        <button class="filter-btn" data-filter="overdue" onclick="applyFilter('overdue', event)">Overdue</button>
-                        <button class="filter-btn" data-filter="p1" onclick="applyFilterPrio('P1', event)">P1</button>
-                        <button class="filter-btn" data-filter="p2" onclick="applyFilterPrio('P2', event)">P2</button>
-                        <button class="filter-btn" data-filter="escalated" onclick="applyFilter('escalated', event)">Escalated</button>
+                        <label class="filter-label" for="status-filter">Show:</label>
+                        <select id="status-filter" class="filter-select" onchange="applyDropdownFilter(this.value)">
+                            <option value="" selected>Select a view…</option>
+                            <option value="all">All Tickets</option>
+                            <option value="open">Open</option>
+                            <option value="resolved">Resolved</option>
+                            <option value="overdue">Overdue</option>
+                            <option value="escalated">Escalated</option>
+                            <option value="P1">P1 - Critical</option>
+                            <option value="P2">P2 - High</option>
+                        </select>
                     </div>
                 </div>
                 <div id="list"><p class="empty-msg">Loading tickets…</p></div>
